@@ -1,0 +1,9 @@
+{
+  "name": "face-swap-local",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "engines": { "node": ">=18" },
+  "scripts": { "postinstall": "node setup.mjs", "start": "node server.mjs" },
+  "dependencies": { "@mediapipe/tasks-vision": "^0.10.14" }
+}
