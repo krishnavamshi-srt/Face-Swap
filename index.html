@@ -70,6 +70,7 @@ button:focus-visible,input:focus-visible,label:focus-within{outline:2px solid va
 .rng span{width:110px;flex:none}.rng input{flex:1;accent-color:var(--btn)}
 .btns{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:12px}
 .btns button{padding:10px 16px;border-radius:12px;background:var(--line);font-weight:600}
+.rng select{flex:1;padding:10px;border-radius:12px;background:var(--bg);color:var(--txt);border:1px solid var(--line);font:inherit}
 </style>
 <link rel="manifest" href="manifest.webmanifest"><link rel="icon" href="icon-192.png"><meta name="theme-color" content="#0d0d17"></head>
 <body>
@@ -104,7 +105,8 @@ button:focus-visible,input:focus-visible,label:focus-within{outline:2px solid va
       <span class="num">3</span>
       <label class="rng"><span>Edge softness</span><input type="range" id="soft" min="0" max="100" value="35"></label>
       <label class="rng"><span>Colour match</span><input type="range" id="col" min="0" max="100" value="80"></label>
-      <label class="row"><input type="checkbox" id="kg" checked> Keep the original glasses / sunglasses on</label>
+      <label class="rng"><span>Max head turn</span><input type="range" id="turn" min="15" max="60" value="35"></label>
+      <label class="rng"><span>Glasses</span><select id="kg"><option value="auto">Auto detect</option><option value="keep">Keep original</option><option value="off">Use replacement's</option></select></label>
       <label class="row"><input type="checkbox" id="km"> Keep the original mouth (best lip sync)</label>
       <div class="btns"><button id="pNat">Natural blend</button><button id="pDir">Direct swap</button></div>
       <label class="row"><input type="checkbox" id="consent"> I have permission from every person whose face is swapped.</label>
@@ -179,30 +181,53 @@ const blur=(c,k)=>{ // soft blur by shrinking then enlarging (works in every bro
   k=Math.round(k);if(k<2)return c;
   const s=mkc(c.width/k,c.height/k),sc=s.getContext('2d');sc.imageSmoothingQuality='high';sc.drawImage(c,0,0,s.width,s.height);
   const o=mkc(c.width,c.height),oc=o.getContext('2d');oc.imageSmoothingQuality='high';oc.drawImage(s,0,0,c.width,c.height);return o};
-function swapFace(base,tg,src,o,fade){
-  const b=bb(tg),pad=b.w*.2,bx=Math.max(0,Math.floor(b.x0-pad)),by=Math.max(0,Math.floor(b.y0-pad));
+/* analysis helpers: how far the head is turned, how big the face is */
+const turnR=p=>{const l=p[234],r=p[454],n=p[1],ux=r.x-l.x,uy=r.y-l.y;return Math.abs(2*(((n.x-l.x)*ux+(n.y-l.y)*uy)/((ux*ux+uy*uy)||1))-1)};
+const turnFade=(p,deg)=>{const rm=Math.tan(deg*Math.PI/180);return Math.max(0,Math.min(1,(rm-turnR(p))/(rm*.25)))};
+const info=p=>{const w=Math.round(bb(p).w),d=Math.round(Math.atan(turnR(p))*180/Math.PI);return w+'px · turn '+d+'°'+(w<90?' · small':'')+(d>+$('#turn').value?' · too turned, original kept':'')};
+function swapFace(base,f,tg,o,fade){
+  fade*=turnFade(tg,o.turn);if(fade<=.01)return;
+  const src=f.src,b=bb(tg),pad=b.w*.2,bx=Math.max(0,Math.floor(b.x0-pad)),by=Math.max(0,Math.floor(b.y0-pad));
   const bw=Math.min(S.W,Math.ceil(b.x1+pad))-bx,bh=Math.min(S.H,Math.ceil(b.y1+pad))-by;
   if(bw<8||bh<8)return;
   const t=tg.map(p=>({x:p.x-bx,y:p.y-by})),L=mkc(bw,bh),lc=L.getContext('2d',{willReadFrequently:true});
   for(const [a,c,d] of TRI)warp(lc,src.canvas,src.pts[a],src.pts[c],src.pts[d],t[a],t[c],t[d]);
-  const M=mkc(bw,bh),mc=M.getContext('2d'),hl=hull(t);
+  const B=mkc(bw,bh),bc=B.getContext('2d',{willReadFrequently:true});bc.drawImage(base,bx,by,bw,bh,0,0,bw,bh);
+  // are the target's eyes behind dark lenses? (auto glasses detection, smoothed over frames)
+  const lum=(x,y)=>{const r=Math.max(2,b.w*.05),w=Math.max(1,Math.min(bw,2*r|0)),h=Math.max(1,Math.min(bh,2*r|0));
+    const d=bc.getImageData(Math.min(Math.max(0,Math.round(x-r)),bw-w),Math.min(Math.max(0,Math.round(y-r)),bh-h),w,h).data;
+    let s=0;for(let i=0;i<d.length;i+=4)s+=d[i]*.3+d[i+1]*.59+d[i+2]*.11;return s/(d.length/4)};
+  const ec=(a,c,d,e)=>lum((t[a].x+t[c].x+t[d].x+t[e].x)/4,(t[a].y+t[c].y+t[d].y+t[e].y)/4);
+  const skin=(lum(t[50].x,t[50].y)+lum(t[280].x,t[280].y)+lum(t[151].x,t[151].y))/3||1;
+  const ratio=(ec(33,133,159,145)+ec(263,362,386,374))/2/skin;
+  f.dk=f.dk==null?ratio:f.dk*.8+ratio*.2;
+  const keepEyes=o.glasses==='keep'||(o.glasses==='auto'&&f.dk<.5);
+  const M=mkc(bw,bh),mc=M.getContext('2d',{willReadFrequently:true}),hl=hull(t);
   const cx=hl.reduce((s,p)=>s+p.x,0)/hl.length,cy=hl.reduce((s,p)=>s+p.y,0)/hl.length;
   mc.fillStyle='#fff';mc.beginPath();
-  hl.forEach((p,i)=>{const x=cx+(p.x-cx)*.9,y=cy+(p.y-cy)*.9;i?mc.lineTo(x,y):mc.moveTo(x,y)});mc.fill();
-  mc.globalCompositeOperation='destination-out'; // keep the original glasses / mouth by cutting holes in the swap
+  hl.forEach((p,i)=>{const x=cx+(p.x-cx)*.92,y=cy+(p.y-cy)*.92;i?mc.lineTo(x,y):mc.moveTo(x,y)});mc.fill();
+  mc.globalCompositeOperation='destination-out';
   const hole=(ids,fx,fy)=>{
     const h=hull(ids.map(i=>t[i])),gx=h.reduce((s,p)=>s+p.x,0)/h.length,gy=h.reduce((s,p)=>s+p.y,0)/h.length;
     mc.beginPath();h.forEach((p,i)=>{const x=gx+(p.x-gx)*fx,y=gy+(p.y-gy)*fy;i?mc.lineTo(x,y):mc.moveTo(x,y)});mc.fill();
   };
-  if(o.glasses&&IDX.eyes?.length)hole(IDX.eyes,1.3,1.6);
+  if(keepEyes&&IDX.eyes?.length)hole(IDX.eyes,1.3,1.6);
   if(o.mouth&&IDX.lips?.length)hole(IDX.lips,1.15,1.25);
   mc.globalCompositeOperation='source-over';
-  if(o.color>0){
-    const B=mkc(bw,bh);B.getContext('2d').drawImage(base,bx,by,bw,bh,0,0,bw,bh);
-    const r=Math.max(3,b.w*.09),LB=blur(L,r).getContext('2d').getImageData(0,0,bw,bh).data,BB=blur(B,r).getContext('2d').getImageData(0,0,bw,bh).data;
-    const li=lc.getImageData(0,0,bw,bh),d=li.data,g=o.color/100;
-    for(let i=0;i<d.length;i+=4)if(d[i+3]&&LB[i+3]>128)for(let k=0;k<3;k++)d[i+k]+=(BB[i+k]-LB[i+k])*g;
-    lc.putImageData(li,0,0);
+  if(o.color>0){ // match skin tone and contrast, ignoring beard, hair and highlights
+    const dB=bc.getImageData(0,0,bw,bh).data,li=lc.getImageData(0,0,bw,bh),dL=li.data,dM=mc.getImageData(0,0,bw,bh).data;
+    const px=[];for(let i=0;i<dL.length;i+=8)if(dM[i+3]>200&&dL[i+3]>250)px.push(i);
+    if(px.length>60){
+      const ly=(d,i)=>d[i]*.3+d[i+1]*.59+d[i+2]*.11;
+      const keep=(d,lo,hi)=>{const v=Float32Array.from(px,i=>ly(d,i)).sort(),a=v[Math.floor(v.length*lo)],z=v[Math.floor(v.length*hi)];return px.filter(i=>{const y=ly(d,i);return y>=a&&y<=z})};
+      const st=(d,P)=>{const m=[0,0,0],q=[0,0,0],n=P.length||1;for(const i of P)for(let k=0;k<3;k++){m[k]+=d[i+k];q[k]+=d[i+k]**2}return m.map((v,k)=>{const u=v/n;return[u,Math.sqrt(Math.max(1,q[k]/n-u*u))]})};
+      const sb=st(dB,keep(dB,.25,.92)),sl=st(dL,keep(dL,.1,.92));
+      const cur=sb.map((v,k)=>[v[0],sl[k][0],Math.min(1.25,Math.max(.8,v[1]/sl[k][1]))]);
+      f.cs=f.cs?cur.map((c,k)=>c.map((x,j)=>f.cs[k][j]*.65+x*.35)):cur;
+      const g=o.color/100,C0=f.cs;
+      for(let i=0;i<dL.length;i+=4)if(dL[i+3])for(let k=0;k<3;k++){const v=(dL[i+k]-C0[k][1])*C0[k][2]+C0[k][0];dL[i+k]+=(v-dL[i+k])*g}
+      lc.putImageData(li,0,0);
+    }
   }
   lc.globalCompositeOperation='destination-in';lc.drawImage(blur(M,o.soft/100*b.w*.14),0,0);
   X.globalAlpha=fade;X.drawImage(L,bx,by);X.globalAlpha=1;
@@ -230,10 +255,10 @@ function paint(){
   X.drawImage(base,0,0);
   if(S.orig||!S.faces.some(f=>f.on&&f.src))return;
   if(vid)track();
-  const o={soft:+$('#soft').value,color:+$('#col').value,glasses:$('#kg').checked,mouth:$('#km').checked};
+  const o={soft:+$('#soft').value,color:+$('#col').value,glasses:$('#kg').value,mouth:$('#km').checked,turn:+$('#turn').value};
   S.faces.forEach(f=>{
     const p=vid?f.cur:f.pts,m=f.miss||0,fade=vid?(m<=6?1:Math.max(0,1-(m-6)/6)):1;
-    if(f.on&&f.src&&p&&fade>0)swapFace(base,p,f.src,o,fade);
+    if(f.on&&f.src&&p&&fade>0)swapFace(base,f,p,o,fade);
   });
 }
 function loop(){paint();if(S.V&&!S.V.paused&&!S.V.ended)raf(loop)}
@@ -249,7 +274,7 @@ function renderFaces(){
   }
   S.faces.forEach((f,i)=>{
     const d=document.createElement('div');d.className='face';d.style.flexWrap='wrap';
-    d.innerHTML=`<img class="t" alt="Detected face ${i+1}" src="${f.thumb}"><div class="n">Face ${i+1}<small>${!f.on?'Not selected':f.src?'Replacement ready':'Needs a replacement'}</small></div>`;
+    d.innerHTML=`<img class="t" alt="Detected face ${i+1}" src="${f.thumb}"><div class="n">Face ${i+1}<small>${!f.on?'Not selected':f.src?'Replacement ready':'Needs a replacement'} · ${info(f.pts)}</small></div>`;
     const t=document.createElement('button');t.className='pill '+(f.on?'sel':'off');t.textContent=f.on?'Selected':'Select';
     t.onclick=()=>{if(!S.multi&&!f.on)S.faces.forEach(x=>x.on=false);f.on=!f.on;renderFaces();paint()};
     d.appendChild(t);
@@ -269,7 +294,7 @@ async function setRep(f,file){
     const c=fit(await createImageBitmap(file),1024),list=detImg(c);
     if(!list.length)return msg('No face found in that image. Use a clear, front-facing photo.',true);
     const p=list.sort((a,b)=>bb(b).w-bb(a).w)[0];
-    f.src={canvas:c,pts:p};f.rep=thumb(c,p);msg('');renderFaces();paint();
+    f.src={canvas:c,pts:p};f.cs=null;f.dk=null;f.rep=thumb(c,p);renderFaces();paint();const q=bb(p);msg((q.w<120?'The replacement face is small. A larger photo looks better. ':'')+(turnR(p)>.35?'The replacement is turned. Use a front-facing photo.':''));
   }catch(e){msg(e.message,true)}
 }
 function setFaces(list,src){
@@ -408,7 +433,7 @@ $('#multseg').onclick=e=>{
 const cmp=$('#cmp');
 cmp.onpointerdown=()=>{S.orig=true;paint()};
 cmp.onpointerup=cmp.onpointerleave=()=>{if(S.orig){S.orig=false;paint()}};
-$('#soft').oninput=$('#col').oninput=()=>S.V&&!S.V.paused?0:paint();
+$('#soft').oninput=$('#col').oninput=$('#turn').oninput=()=>S.V&&!S.V.paused?0:paint();
 $('#play').onclick=()=>{const v=S.V;if(v.paused){v.muted=false;v.play();raf(loop)}else v.pause()};
 $('#scrub').oninput=e=>{S.V.currentTime=e.target.value/1000*S.V.duration};
 $('#det').onclick=detectHere;
