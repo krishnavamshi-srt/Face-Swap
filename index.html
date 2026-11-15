@@ -105,7 +105,8 @@ button:focus-visible,input:focus-visible,label:focus-within{outline:2px solid va
       <span class="num">3</span>
       <label class="rng"><span>Edge softness</span><input type="range" id="soft" min="0" max="100" value="35"></label>
       <label class="rng"><span>Colour match</span><input type="range" id="col" min="0" max="100" value="80"></label>
-      <label class="rng"><span>Max head turn</span><input type="range" id="turn" min="15" max="60" value="35"></label>
+      <label class="rng"><span>Max head turn</span><input type="range" id="turn" min="30" max="90" value="75"></label>
+      <label class="rng"><span>Face area</span><input type="range" id="cov" min="85" max="110" value="98"></label>
       <label class="rng"><span>Glasses</span><select id="kg"><option value="auto">Auto detect</option><option value="keep">Keep original</option><option value="off">Use replacement's</option></select></label>
       <label class="row"><input type="checkbox" id="km"> Keep the original mouth (best lip sync)</label>
       <div class="btns"><button id="pNat">Natural blend</button><button id="pDir">Direct swap</button></div>
@@ -157,7 +158,7 @@ const engine=()=>booting??=(async()=>{
   IDX={eyes:[...ix(F.FACE_LANDMARKS_LEFT_EYE),...ix(F.FACE_LANDMARKS_LEFT_EYEBROW),...ix(F.FACE_LANDMARKS_RIGHT_EYE),...ix(F.FACE_LANDMARKS_RIGHT_EYEBROW)],lips:ix(F.FACE_LANDMARKS_LIPS)};
   msg('');
 })();
-const pts=(r,W,H)=>r.faceLandmarks.map(f=>f.map(p=>({x:p.x*W,y:p.y*H})));
+const pts=(r,W,H)=>r.faceLandmarks.map(f=>f.map(p=>({x:p.x*W,y:p.y*H,z:p.z*W})));
 const detImg=c=>pts(FLi.detect(c),c.width,c.height);
 const detVid=()=>{S.ts=Math.max(S.ts+1,performance.now());return pts(FLv.detectForVideo(S.V,S.ts),S.W,S.H)};
 
@@ -182,7 +183,8 @@ const blur=(c,k)=>{ // soft blur by shrinking then enlarging (works in every bro
   const s=mkc(c.width/k,c.height/k),sc=s.getContext('2d');sc.imageSmoothingQuality='high';sc.drawImage(c,0,0,s.width,s.height);
   const o=mkc(c.width,c.height),oc=o.getContext('2d');oc.imageSmoothingQuality='high';oc.drawImage(s,0,0,c.width,c.height);return o};
 /* analysis helpers: how far the head is turned, how big the face is */
-const turnR=p=>{const l=p[234],r=p[454],n=p[1],ux=r.x-l.x,uy=r.y-l.y;return Math.abs(2*(((n.x-l.x)*ux+(n.y-l.y)*uy)/((ux*ux+uy*uy)||1))-1)};
+const turnS=p=>{const l=p[234],r=p[454],n=p[1],ux=r.x-l.x,uy=r.y-l.y;return 2*(((n.x-l.x)*ux+(n.y-l.y)*uy)/((ux*ux+uy*uy)||1))-1};
+const turnR=p=>Math.abs(turnS(p));
 const turnFade=(p,deg)=>{const rm=Math.tan(deg*Math.PI/180);return Math.max(0,Math.min(1,(rm-turnR(p))/(rm*.25)))};
 const info=p=>{const w=Math.round(bb(p).w),d=Math.round(Math.atan(turnR(p))*180/Math.PI);return w+'px · turn '+d+'°'+(w<90?' · small':'')+(d>+$('#turn').value?' · too turned, original kept':'')};
 function swapFace(base,f,tg,o,fade){
@@ -190,8 +192,19 @@ function swapFace(base,f,tg,o,fade){
   const src=f.src,b=bb(tg),pad=b.w*.2,bx=Math.max(0,Math.floor(b.x0-pad)),by=Math.max(0,Math.floor(b.y0-pad));
   const bw=Math.min(S.W,Math.ceil(b.x1+pad))-bx,bh=Math.min(S.H,Math.ceil(b.y1+pad))-by;
   if(bw<8||bh<8)return;
-  const t=tg.map(p=>({x:p.x-bx,y:p.y-by})),L=mkc(bw,bh),lc=L.getContext('2d',{willReadFrequently:true});
-  for(const [a,c,d] of TRI)warp(lc,src.canvas,src.pts[a],src.pts[c],src.pts[d],t[a],t[c],t[d]);
+  const t=tg.map(p=>({x:p.x-bx,y:p.y-by,z:p.z})),L=mkc(bw,bh),lc=L.getContext('2d',{willReadFrequently:true});
+  const area=(p,q,r)=>(q.x-p.x)*(r.y-p.y)-(r.x-p.x)*(q.y-p.y),zs=v=>t[v[0]].z+t[v[1]].z+t[v[2]].z;
+  const draw=(s,w)=>{
+    lc.globalAlpha=w;
+    TRI.filter(v=>area(s.pts[v[0]],s.pts[v[1]],s.pts[v[2]])*area(t[v[0]],t[v[1]],t[v[2]])>0).sort((u,v)=>zs(v)-zs(u))
+      .forEach(([a,c,d])=>warp(lc,s.canvas,s.pts[a],s.pts[c],s.pts[d],t[a],t[c],t[d]));
+    lc.globalAlpha=1;
+  };
+  draw(src,1);
+  if(f.side){
+    const ts=turnS(tg),w=Math.max(0,Math.min(1,(Math.abs(ts)-.25)/.3));
+    if(w>0){const sd=[f.side,f.sideF].find(x=>x&&Math.sign(turnS(x.pts))===Math.sign(ts));if(sd)draw(sd,w)}
+  }
   const B=mkc(bw,bh),bc=B.getContext('2d',{willReadFrequently:true});bc.drawImage(base,bx,by,bw,bh,0,0,bw,bh);
   // are the target's eyes behind dark lenses? (auto glasses detection, smoothed over frames)
   const lum=(x,y)=>{const r=Math.max(2,b.w*.05),w=Math.max(1,Math.min(bw,2*r|0)),h=Math.max(1,Math.min(bh,2*r|0));
@@ -205,7 +218,7 @@ function swapFace(base,f,tg,o,fade){
   const M=mkc(bw,bh),mc=M.getContext('2d',{willReadFrequently:true}),hl=hull(t);
   const cx=hl.reduce((s,p)=>s+p.x,0)/hl.length,cy=hl.reduce((s,p)=>s+p.y,0)/hl.length;
   mc.fillStyle='#fff';mc.beginPath();
-  hl.forEach((p,i)=>{const x=cx+(p.x-cx)*.92,y=cy+(p.y-cy)*.92;i?mc.lineTo(x,y):mc.moveTo(x,y)});mc.fill();
+  hl.forEach((p,i)=>{const x=cx+(p.x-cx)*o.cov,y=cy+(p.y-cy)*o.cov;i?mc.lineTo(x,y):mc.moveTo(x,y)});mc.fill();
   mc.globalCompositeOperation='destination-out';
   const hole=(ids,fx,fy)=>{
     const h=hull(ids.map(i=>t[i])),gx=h.reduce((s,p)=>s+p.x,0)/h.length,gy=h.reduce((s,p)=>s+p.y,0)/h.length;
@@ -242,7 +255,7 @@ function track(){
     det.forEach((p,i)=>{if(used.has(i))return;const c=cen(p),d=Math.hypot(c.x-f.c.x,c.y-f.c.y);if(d<bd){bd=d;best=i}});
     if(best>=0&&bd<S.W*.25){
       used.add(best);const p=det[best],q=f.cur;
-      f.cur=q&&q.length===p.length?p.map((n,i)=>({x:q[i].x+(n.x-q[i].x)*.6,y:q[i].y+(n.y-q[i].y)*.6})):p;
+      f.cur=q&&q.length===p.length?p.map((n,i)=>({x:q[i].x+(n.x-q[i].x)*.6,y:q[i].y+(n.y-q[i].y)*.6,z:q[i].z+(n.z-q[i].z)*.6})):p;
       f.c=cen(f.cur);f.miss=0;
     }else f.miss=(f.miss||0)+1;
   });
@@ -255,9 +268,9 @@ function paint(){
   X.drawImage(base,0,0);
   if(S.orig||!S.faces.some(f=>f.on&&f.src))return;
   if(vid)track();
-  const o={soft:+$('#soft').value,color:+$('#col').value,glasses:$('#kg').value,mouth:$('#km').checked,turn:+$('#turn').value};
+  const o={soft:+$('#soft').value,color:+$('#col').value,glasses:$('#kg').value,mouth:$('#km').checked,turn:+$('#turn').value,cov:+$('#cov').value/100};
   S.faces.forEach(f=>{
-    const p=vid?f.cur:f.pts,m=f.miss||0,fade=vid?(m<=6?1:Math.max(0,1-(m-6)/6)):1;
+    const p=vid?f.cur:f.pts,m=f.miss||0,fade=vid?(m<=12?1:Math.max(0,1-(m-12)/8)):1;
     if(f.on&&f.src&&p&&fade>0)swapFace(base,f,p,o,fade);
   });
 }
@@ -283,17 +296,27 @@ function renderFaces(){
       const lab=document.createElement('label');lab.className='pill';lab.textContent=f.src?'Change':'Upload replacement';
       const inp=document.createElement('input');inp.type='file';inp.accept='image/*';inp.hidden=true;
       inp.onchange=()=>inp.files[0]&&setRep(f,inp.files[0]);lab.appendChild(inp);d.appendChild(lab);
+      if(f.src){
+        const sl=document.createElement('label');sl.className='pill off';sl.textContent=f.side?'Change side photo':'Add side photo';
+        const si=document.createElement('input');si.type='file';si.accept='image/*';si.hidden=true;
+        si.onchange=()=>si.files[0]&&setRep(f,si.files[0],true);sl.appendChild(si);d.appendChild(sl);
+      }
     }
     box.appendChild(d);
   });
   if(!S.faces.length)box.innerHTML='<p class="hint">No faces found. Try a clearer, front-facing '+(S.mode==='video'?'frame.':'photo.')+'</p>';
 }
-async function setRep(f,file){
+async function setRep(f,file,side){
   try{
     await engine();
     const c=fit(await createImageBitmap(file),1024),list=detImg(c);
     if(!list.length)return msg('No face found in that image. Use a clear, front-facing photo.',true);
     const p=list.sort((a,b)=>bb(b).w-bb(a).w)[0];
+    if(side){ // keep the photo and a mirrored copy, so either turn direction works
+      const fc=mkc(c.width,c.height),fx=fc.getContext('2d');fx.translate(c.width,0);fx.scale(-1,1);fx.drawImage(c,0,0);
+      const l2=detImg(fc);f.side={canvas:c,pts:p};f.sideF=l2.length?{canvas:fc,pts:l2.sort((a,b)=>bb(b).w-bb(a).w)[0]}:null;
+      renderFaces();paint();return msg(turnR(p)<.25?'That photo looks front-facing. Use one turned about 45 to 60 degrees.':'');
+    }
     f.src={canvas:c,pts:p};f.cs=null;f.dk=null;f.rep=thumb(c,p);renderFaces();paint();const q=bb(p);msg((q.w<120?'The replacement face is small. A larger photo looks better. ':'')+(turnR(p)>.35?'The replacement is turned. Use a front-facing photo.':''));
   }catch(e){msg(e.message,true)}
 }
@@ -433,7 +456,7 @@ $('#multseg').onclick=e=>{
 const cmp=$('#cmp');
 cmp.onpointerdown=()=>{S.orig=true;paint()};
 cmp.onpointerup=cmp.onpointerleave=()=>{if(S.orig){S.orig=false;paint()}};
-$('#soft').oninput=$('#col').oninput=$('#turn').oninput=()=>S.V&&!S.V.paused?0:paint();
+$('#soft').oninput=$('#col').oninput=$('#turn').oninput=$('#cov').oninput=()=>S.V&&!S.V.paused?0:paint();
 $('#play').onclick=()=>{const v=S.V;if(v.paused){v.muted=false;v.play();raf(loop)}else v.pause()};
 $('#scrub').oninput=e=>{S.V.currentTime=e.target.value/1000*S.V.duration};
 $('#det').onclick=detectHere;
